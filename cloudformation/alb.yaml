@@ -1,0 +1,67 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Part 4: Application Load Balancer (ALB) & Target Group"
+
+Parameters:
+  NetworkStackName:
+    Type: String
+    Description: Name of the Networking Stack
+  AppStackName:
+    Type: String
+    Description: Name of the Application Stack (where EC2 is)
+
+Resources:
+  # ALB Security Group
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTP from Internet
+      VpcId:
+        Fn::ImportValue: !Sub "${NetworkStackName}-VPCID"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  # Load Balancer
+  MyALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: SecureMigrationALB
+      Scheme: internet-facing
+      Subnets:
+        - Fn::ImportValue: !Sub "${NetworkStackName}-PublicSubnetID"
+        - Fn::ImportValue: !Sub "${NetworkStackName}-PublicSubnet2ID"
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      Type: application
+
+  # Target Group
+  MyTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: FlaskAppTG
+      VpcId:
+        Fn::ImportValue: !Sub "${NetworkStackName}-VPCID"
+      Port: 80
+      Protocol: HTTP
+      TargetType: instance
+      Targets:
+        - Id:
+            Fn::ImportValue: !Sub "${AppStackName}-InstanceID"
+
+  # Listener
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref MyALB
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref MyTargetGroup
+
+Outputs:
+  LoadBalancerDNS:
+    Description: Access the App here
+    Value: !GetAtt MyALB.DNSName

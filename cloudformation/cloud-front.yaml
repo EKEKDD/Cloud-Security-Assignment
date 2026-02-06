@@ -1,0 +1,81 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Part 6: CloudFront Distribution (OAC) + S3 Bucket Policy'
+
+Parameters:
+  S3StackName:
+    Type: String
+    Description: Name of the S3 Stack (e.g., MyS3Stack)
+
+Resources:
+  # 1. Origin Access Control (OAC)
+  # This serves as the "Identity" for CloudFront to talk to S3 securely.
+  CloudFrontOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "OAC-${AWS::StackName}"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # 2. CloudFront Distribution
+  MyCloudFront:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: "Secure CDN for Flask App Assets"
+        DefaultRootObject: index.html
+        
+        # Define the S3 Bucket as the Origin
+        Origins:
+          - Id: S3Origin
+            DomainName: 
+              Fn::ImportValue: !Sub "${S3StackName}-BucketDomainName"
+            OriginAccessControlId: !GetAtt CloudFrontOAC.Id
+            S3OriginConfig:
+              OriginAccessIdentity: "" 
+        
+        # Default Behavior (Cache Settings)
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https # Enforces SSL/TLS
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+          # Use the AWS Managed "CachingOptimized" Policy
+          CachePolicyId: "658327ea-f89d-4fab-a63d-7e88639e58f6"
+          Compress: true
+
+  # 3. S3 Bucket Policy 
+  S3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: 
+        Fn::ImportValue: !Sub "${S3StackName}-BucketName"
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontServicePrincipal
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: 
+              - !Sub 
+                - "${BucketArn}/*"
+                - BucketArn: 
+                    Fn::ImportValue: !Sub "${S3StackName}-BucketArn"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${MyCloudFront.Id}"
+
+Outputs:
+  DistributionDomainName:
+    Description: The public URL of your CloudFront Distribution
+    Value: !GetAtt MyCloudFront.DomainName
+    Export:
+      Name: !Sub "${AWS::StackName}-CFDomain"
+  
+  DistributionId:
+    Description: The ID of the distribution
+    Value: !Ref MyCloudFront

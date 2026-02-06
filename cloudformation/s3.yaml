@@ -1,0 +1,52 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Part 5: Private S3 Bucket for Static Assets (Encrypted)"
+
+Resources:
+  # S3 Bucket
+  PrivateS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      # Unique Name
+      BucketName: !Sub "app-assets-${AWS::AccountId}-${AWS::Region}"
+
+      # 1. Block ALL Public Access
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+
+      # 2. Encryption
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+      # 3. Versioning
+      VersioningConfiguration:
+        Status: Enabled
+
+      # 4. Cleanup
+      Tags:
+        - Key: Name
+          Value: PrivateAssetBucket
+
+Outputs:
+  BucketName:
+    Description: The name of the S3 bucket
+    Value: !Ref PrivateS3Bucket
+    Export:
+      Name: !Sub "${AWS::StackName}-BucketName"
+
+  BucketArn:
+    Description: The ARN of the S3 bucket
+    Value: !GetAtt PrivateS3Bucket.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-BucketArn"
+
+  # Domain Name is needed for CloudFront
+  BucketDomainName:
+    Description: The Regional Domain Name
+    Value: !GetAtt PrivateS3Bucket.RegionalDomainName
+    Export:
+      Name: !Sub "${AWS::StackName}-BucketDomainName"

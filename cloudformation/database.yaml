@@ -1,0 +1,72 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Part 2: Database Infrastructure (RDS MySQL, Security Groups) - VERSION 8.0.40"
+
+Parameters:
+  NetworkStackName:
+    Type: String
+    Description: Name of the Networking Stack
+  DBUser:
+    Type: String
+    Default: admin
+  DBPassword:
+    Type: String
+    NoEcho: true
+    Default: admin123456
+
+Resources:
+  # Security Groups
+  AppSecurityGroupPlaceholder:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Placeholder SG for App Tier
+      VpcId:
+        Fn::ImportValue: !Sub "${NetworkStackName}-VPCID"
+
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow SQL from App Tier
+      VpcId:
+        Fn::ImportValue: !Sub "${NetworkStackName}-VPCID"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref AppSecurityGroupPlaceholder
+
+  # RDS Instance
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnets for RDS
+      SubnetIds:
+        - Fn::ImportValue: !Sub "${NetworkStackName}-PrivateSubnet1ID"
+        - Fn::ImportValue: !Sub "${NetworkStackName}-PrivateSubnet2ID"
+
+  MyRDS:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      Engine: MySQL
+      EngineVersion: "8.0.40"
+      DBInstanceClass: db.t3.micro
+      AllocatedStorage: 20
+      MasterUsername: !Ref DBUser
+      MasterUserPassword: !Ref DBPassword
+      VPCSecurityGroups:
+        - !Ref DBSecurityGroup
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      MultiAZ: false
+      PubliclyAccessible: false
+      StorageType: gp2
+      StorageEncrypted: true
+      KmsKeyId: alias/aws/rds
+
+Outputs:
+  RDSEndpoint:
+    Value: !GetAtt MyRDS.Endpoint.Address
+    Export:
+      Name: !Sub "${AWS::StackName}-RDSEndpoint"
+  AppSGID:
+    Value: !Ref AppSecurityGroupPlaceholder
+    Export:
+      Name: !Sub "${AWS::StackName}-AppSGID"

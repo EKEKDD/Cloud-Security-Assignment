@@ -1,0 +1,225 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Part 3: Application Tier (EC2, Flask App with SQLite Fallback)"
+
+Parameters:
+  NetworkStackName:
+    Type: String
+    Description: Name of the Networking Stack
+  DBStackName:
+    Type: String
+    Description: Name of the Database Stack
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: vockey
+
+Resources:
+  # Security Group Rule Update
+  AppSGIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId:
+        Fn::ImportValue: !Sub "${DBStackName}-AppSGID"
+      IpProtocol: tcp
+      FromPort: 80
+      ToPort: 80
+      CidrIp: 0.0.0.0/0
+
+  # EC2 Instance
+  WebAppInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.micro
+      ImageId: ami-0df8c184d5f6ae949 # Amazon Linux 2023 (us-east-1)
+      KeyName: !Ref KeyName
+      SubnetId:
+        Fn::ImportValue: !Sub "${NetworkStackName}-PublicSubnetID"
+      SecurityGroupIds:
+        - Fn::ImportValue: !Sub "${DBStackName}-AppSGID"
+      IamInstanceProfile: LabInstanceProfile
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          # 1. Install System Dependencies
+          dnf update -y
+          dnf install -y python3-pip
+
+          # 2. Install Python Libraries
+          pip3 install flask flask-sqlalchemy python-dotenv werkzeug
+
+          # 3. Create the Templates Directory
+          mkdir -p /home/ec2-user/templates
+
+          # 4. Create the 'login.html' template
+          cat <<EOF > /home/ec2-user/templates/login.html
+          <!doctype html>
+          <html>
+          <head><title>Login</title></head>
+          <body>
+              <h2>System Login</h2>
+              {% with messages = get_flashed_messages() %}
+                {% if messages %}
+                  <ul style="color: red;">{% for message in messages %}<li>{{ message }}</li>{% endfor %}</ul>
+                {% endif %}
+              {% endwith %}
+              <form method="post">
+                  <label>Username:</label> <input type="text" name="username" required><br><br>
+                  <label>Password:</label> <input type="password" name="password" required><br><br>
+                  <button type="submit">Login</button>
+              </form>
+          </body>
+          </html>
+          EOF
+
+          # 5. Create the 'dashboard.html' template
+          cat <<EOF > /home/ec2-user/templates/dashboard.html
+          <!doctype html>
+          <html>
+          <head><title>Dashboard</title></head>
+          <body>
+              <h2>Welcome, {{ username }}</h2>
+              <a href="{{ url_for('logout') }}">Logout</a>
+              <hr>
+              <h3>Employee List</h3>
+              <table border="1" cellpadding="5">
+                  <tr>
+                      <th>ID</th><th>Name</th><th>Position</th><th>Salary</th><th>Action</th>
+                  </tr>
+                  {% for emp in employees %}
+                  <tr>
+                      <td>{{ emp.EmployeeID }}</td>
+                      <td>{{ emp.FullName }}</td>
+                      <td>{{ emp.Position }}</td>
+                      <td>{{ emp.Salary }}</td>
+                      <td>
+                          <form action="{{ url_for('delete_employee', id=emp.EmployeeID) }}" method="post" style="display:inline;">
+                              <button type="submit">Delete</button>
+                          </form>
+                      </td>
+                  </tr>
+                  {% endfor %}
+              </table>
+              
+              <h3>Add Employee</h3>
+              <form action="{{ url_for('add_employee') }}" method="post">
+                  <input type="text" name="fullname" placeholder="Full Name" required>
+                  <input type="text" name="icnumber" placeholder="IC Number" required>
+                  <input type="number" name="salary" placeholder="Salary" required>
+                  <input type="text" name="position" placeholder="Position" required>
+                  <button type="submit">Add</button>
+              </form>
+          </body>
+          </html>
+          EOF
+
+          # 6. Create the Application File (app.py)
+          cat <<EOF > /home/ec2-user/app.py
+          from flask import Flask, render_template, request, redirect, url_for, flash, session
+          from flask_sqlalchemy import SQLAlchemy
+          from werkzeug.security import check_password_hash, generate_password_hash
+          import os
+
+          app = Flask(__name__)
+          app.secret_key = 'super_secret_key'
+
+          # --- FIX 1: Use local SQLite for the Lab (RDS is restricted) ---
+          app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:////home/ec2-user/site.db'
+          app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+          db = SQLAlchemy(app)
+
+          # Database models
+          class User(db.Model):
+              __tablename__ = 'Users'
+              UserID = db.Column(db.Integer, primary_key=True)
+              Username = db.Column(db.String(50), unique=True, nullable=False)
+              PasswordHash = db.Column(db.String(255), nullable=False)
+              Role = db.Column(db.String(20), default='User')
+
+          class Employee(db.Model):
+              __tablename__ = 'Employees'
+              EmployeeID = db.Column(db.Integer, primary_key=True)
+              FullName = db.Column(db.String(100), nullable=False)
+              ICnumber = db.Column(db.String(20))
+              Salary = db.Column(db.Numeric(10, 2))
+              Position = db.Column(db.String(50))
+
+          @app.route('/', methods=['GET', 'POST'])
+          def login():
+              if request.method == 'POST':
+                  username = request.form['username']
+                  password = request.form['password']
+                  user = User.query.filter_by(Username=username).first()
+                  if user and check_password_hash(user.PasswordHash, password):
+                      session['user_id'] = user.UserID
+                      session['username'] = user.Username
+                      session['role'] = user.Role
+                      return redirect(url_for('dashboard'))
+                  else:
+                      flash('Wrong credentials')
+              return render_template('login.html')
+
+          @app.route('/dashboard')
+          def dashboard():
+              if 'user_id' not in session: return redirect(url_for('login'))
+              employees = Employee.query.all()
+              return render_template('dashboard.html', employees=employees, username=session['username'])
+
+          @app.route('/add', methods=['POST'])
+          def add_employee():
+              if 'user_id' not in session: return redirect(url_for('login'))
+              new_emp = Employee(
+                  FullName=request.form['fullname'],
+                  ICnumber=request.form['icnumber'],
+                  Salary=request.form['salary'],
+                  Position=request.form['position']
+              )
+              db.session.add(new_emp)
+              db.session.commit()
+              flash('Employee Added Successfully')
+              return redirect(url_for('dashboard'))
+
+          @app.route('/delete/<int:id>', methods=['POST'])
+          def delete_employee(id):
+              if 'user_id' not in session: return redirect(url_for('login'))
+              emp = Employee.query.get_or_404(id)
+              db.session.delete(emp)
+              db.session.commit()
+              flash('Employee Deleted')
+              return redirect(url_for('dashboard'))
+
+          @app.route('/logout')
+          def logout():
+              session.clear()
+              return redirect(url_for('login'))
+
+          # --- FIX 2: Correct Startup Logic & Seed Admin User ---
+          if __name__ == '__main__':
+              with app.app_context():
+                  db.create_all()
+                  # Create a default Admin user if none exists so you can login!
+                  if not User.query.filter_by(Username='admin').first():
+                      hashed_pw = generate_password_hash('admin123')
+                      admin = User(Username='admin', PasswordHash=hashed_pw, Role='Admin')
+                      db.session.add(admin)
+                      db.session.commit()
+                      print("Admin user created (User: admin, Pass: admin123)")
+
+              # Run on Port 80 (Required for Security Group) and 0.0.0.0 (Required for External Access)
+              app.run(host='0.0.0.0', port=80)
+          EOF
+
+          # 7. Run the App in Background
+          nohup python3 /home/ec2-user/app.py > /home/ec2-user/app.log 2>&1 &
+      Tags:
+        - Key: Name
+          Value: WebServer1
+
+Outputs:
+  WebsiteURL:
+    Description: URL of the deployed application
+    Value: !Sub "http://${WebAppInstance.PublicIp}"
+  InstanceID:
+    Description: The Instance ID for the ALB Target Group
+    Value: !Ref WebAppInstance
+    Export:
+      Name: !Sub "${AWS::StackName}-InstanceID"
